@@ -1,56 +1,50 @@
-# seed_logs.py
-import os, time, re
-import pandas as pd
+# apps/seed_logs.py
+import os, time, json, random, pathlib
 from pymongo import MongoClient
+import pandas as pd
 
-MONGO_URI = os.environ.get("MONGO_URI")
-if not MONGO_URI:
-    raise RuntimeError("MONGO_URI 환경변수를 설정하세요.")
+HOME = pathlib.Path.home()
+CSV_PROGRAM = os.getenv("CSV_PROGRAM", str(HOME / "hackathon/artifacts/data/program.csv"))
+MONGO_URI   = os.getenv("MONGO_URI", "")
+MONGO_DB    = os.getenv("MONGO_DB", "ggoomgil")
+EVENTS_COL  = os.getenv("EVENTS_COL", "events")
 
-client = MongoClient(MONGO_URI)
-db_name = MONGO_URI.split("/")[-1].split("?")[0]
-db = client[db_name]
-events = db["events"]
+WEIGHTS = {"click":1, "like":3}
 
-CSV_PROGRAM = os.path.expanduser("~/hackathon/artifacts/data/program.csv")
-prog = pd.read_csv(CSV_PROGRAM, dtype=str)
-prog.fillna("", inplace=True)
+client = MongoClient(MONGO_URI) if MONGO_URI else None
+db = client[MONGO_DB] if client is not None else None
+events = db[EVENTS_COL] if db is not None else None
 
-def find_ids_by_keywords(keywords):
-    ids = []
-    for _, r in prog.iterrows():
-        title = (r.get("title") or "").lower()
-        pid = str(r.get("program_id") or "").strip()
-        if not pid:
-            continue
-        if any(kw in title for kw in keywords):
-            ids.append(pid)
-    return list(dict.fromkeys(ids))  # unique order
+if events is None:
+    print("❌ Mongo is not configured. Set MONGO_URI.")
+    raise SystemExit(1)
+
+prog = pd.read_csv(CSV_PROGRAM).fillna("")
+# 간단한 필터: 제목/유형에 'AI','코딩','SW','소프트웨어','인공지능' 포함
+KEYS = ["AI", "코딩", "소프트웨어", "SW", "인공지능", "로봇", "데이터", "프로그래밍"]
+def is_ai_row(r):
+    txt = f"{r.get('title','')} {r.get('program_type','')} {r.get('related_major','')}".lower()
+    return any(k.lower() in txt for k in KEYS)
+
+ai_df = prog[prog.apply(is_ai_row, axis=1)]
+print(f"AI 후보 개수: {len(ai_df)}")
 
 now = int(time.time())
+user = "u_ai_lover"
 
-def bulk_insert(user_id, program_ids, n_click=6, n_like=3):
-    logs = []
-    for pid in program_ids[:8]:  # 너무 많지 않게 선별
-        # 클릭 여러 번 + 좋아요 몇 번
-        for i in range(n_click):
-            logs.append({"type": "click", "user_id": user_id, "program_id": pid, "ts": now - (i * 120 + 5)})
-        for j in range(n_like):
-            logs.append({"type": "like", "user_id": user_id, "program_id": pid, "ts": now - (j * 240 + 15)})
-    if logs:
-        events.insert_many(logs)
-        print(f"✅ {user_id}: {len(logs)} logs inserted for {len(program_ids[:8])} programs")
-    else:
-        print(f"⚠️ {user_id}: matching programs not found, no logs inserted")
+bulk = []
+for _, r in ai_df.sample(min(60, len(ai_df))).iterrows():
+    pid = str(r.get("program_id",""))
+    if not pid: continue
+    # like 1~2번, click 1~3번
+    for _ in range(random.randint(1,2)):
+        bulk.append({"user_id": user, "program_id": pid, "event": "like", "ts": now - random.randint(0, 7*86400)})
+    for _ in range(random.randint(1,3)):
+        bulk.append({"user_id": user, "program_id": pid, "event": "click","ts": now - random.randint(0, 7*86400)})
 
-# u_1: 바리스타/제과제빵 계열
-barista_ids = find_ids_by_keywords(["바리스타", "카페", "커피", "제과", "제빵"])
-bulk_insert("u_1", barista_ids)
-
-# u_2: AI/코딩/로봇 계열
-coding_ids = find_ids_by_keywords(["ai", "인공지능", "코딩", "파이썬", "python", "로봇", "로보", "sw", "소프트웨어"])
-bulk_insert("u_2", coding_ids)
-
-# u_3: 콜드스타트 — 아무것도 안 넣음
-print("✅ u_3: cold start (no logs)")
+if bulk:
+    events.insert_many(bulk)
+    print(f"✅ insert {len(bulk)} events for {user}")
+else:
+    print("⚠️ No AI-like items found to seed.")
 
