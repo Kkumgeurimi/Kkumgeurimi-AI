@@ -6,3 +6,4 @@ sentence-transformers
 pymongo
 python-multipart
 openai
+boto3
