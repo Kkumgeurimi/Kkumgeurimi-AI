@@ -30,27 +30,24 @@ def download_from_s3(bucket: str, key: str, local_path: str) -> bool:
 def process_and_combine_text(csv_path: str) -> list[str]:
     print("Processing CSV and combining text for embedding...")
     df = pd.read_csv(csv_path)
-    
-    # ⭐️ 1. 검색(유사도 계산)에 사용할 열 이름 목록을 직접 정의합니다.
-    embedding_columns = {
-        'title': 3,  # 제목은 3번 반복
-        'major': 3, # 관련 전공도 3번 반복
-    }
-    
     texts = []
     for _, row in df.iterrows():
-        text_parts = []
-        # ⭐️ 2. 정의된 열과 가중치에 따라 텍스트를 조합합니다.
-        for col, weight in embedding_columns.items():
-            content = str(row.get(col, ""))
-            if content: # 내용이 있는 경우에만 추가
-                text_parts.extend([content] * weight)
+        title = str(row.get("title", ""))
+        major = str(row.get("체험직무학과", ""))
+
+        # ⭐️ 1. 상세 설명을 description 변수로 가져옵니다.
+        description = str(row.get("수준별 정보", ""))
+
+        # 2. 기존처럼 제목과 전공을 3번 반복해서 핵심 정보(core_info)를 만듭니다.
+        core_info = " ".join([title,major] * 3)
         
-        full_text = " ".join(text_parts)
+        # ⭐️ 3. 핵심 정보 뒤에 상세 설명을 합쳐서 최종 텍스트를 만듭니다.
+        full_text = core_info + " " + description
         texts.append(full_text.strip())
         
-    print(f"✅ Combined text for {len(texts)} programs using selected columns.")
+    print(f"✅ Combined text for {len(texts)} programs.")
     return texts
+
 
 def embed_texts(texts: list[str]) -> np.ndarray:
     print(f"Loading embedding model '{MODEL_NAME}'...")
