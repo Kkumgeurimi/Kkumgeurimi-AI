@@ -9,6 +9,11 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
+# --- S3 설정 (⭐️ 하나로 통일) ---
+S3_BUCKET_NAME = "ggoomgil-raw" # 👈 본인의 S3 버킷 이름
+S3_PROGRAM_CSV_KEY = "ggoomgil_surface_seongnam_with_category.csv" # 👈 사용할 단 하나의 CSV 경로
+
+
 # --- 데이터 및 임베딩 경로 ---
 CSV_PROGRAM_PATH = PROJECT_ROOT / "artifacts" / "data" / "program.csv"
 ITEMS_NPY_PATH = PROJECT_ROOT / "artifacts" / "emb" / "items.npy"

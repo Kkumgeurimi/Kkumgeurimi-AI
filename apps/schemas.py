@@ -25,7 +25,7 @@ class EventIn(BaseModel):
     payload: Optional[Dict[str, Any]] = None
 
 class ProgramMatch(BaseModel):
-    program_id: Optional[str] = None
+#    program_id: Optional[str] = None
     title: Optional[str] = None
     program_type: Optional[str] = None
     target_audience: Optional[str] = None
