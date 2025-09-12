@@ -201,7 +201,6 @@ def fetch_chat_history(user_id: str, profession: str) -> List[Dict[str, str]]:
     return [{"query": h.get("query", ""), "answer": h.get("answer", "")} for h in history_docs]
 
 
-# ======================================================================================
 # 5. API 엔드포인트
 # ======================================================================================
 @app.get("/healthz")
@@ -245,6 +244,14 @@ def chat(req: schemas.ChatReq):
             "ts": datetime.now(timezone.utc),
         })
     
+    # 🔑 score 필터: 0.5 미만 제거 (>= 0.5만 남김)
+    SCORE_THRESHOLD = 0.5
+    top_matches = [m for m in top_matches if float(m.get("score", 0)) >= SCORE_THRESHOLD]
+
+    if not top_matches:
+    # 필터로 다 날아가면 상위 몇 개는 살려둠(예: 3개)
+        top_matches = all_matches[:3]
+
     return schemas.ChatResp(
         answer=answer,
         top_matches=[schemas.ProgramMatch(**m) for m in top_matches],
