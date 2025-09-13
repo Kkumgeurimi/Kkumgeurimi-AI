@@ -10,6 +10,8 @@ from typing import List, Dict, Any
 import numpy as np
 import pandas as pd
 
+import uuid
+
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 
@@ -65,8 +67,16 @@ def startup_event():
         app.state.db = app.state.mcli[config.DB_NAME]
         app.state.users = app.state.db[config.USERS_COLLECTION]
         app.state.history = app.state.db[config.HISTORY_COLLECTION]
-        app.state.history.create_index([("user_id", 1), ("profession", 1), ("ts", -1)])
+        # ⭐️ 추천 기록 컬렉션 초기화
+        app.state.recommendations = app.state.db[config.RECOMMENDATIONS_COLLECTION]
+        
+        # 인덱스 설정
+        app.state.history.create_index([("student_id", 1), ("profession", 1), ("ts", -1)])
+        # ⭐️ 추천 기록 컬렉션 인덱스 추가
+        app.state.recommendations.create_index([("student_id", 1), ("ts", -1)])
+        
         print("✅ MongoDB connected successfully.")
+
     except Exception as e:
         print(f"🔥 MongoDB connection failed: {e}")
         app.state.mcli = app.state.db = app.state.users = app.state.history = None
@@ -82,7 +92,7 @@ def startup_event():
         raise RuntimeError("🔥 Failed to download program CSV from S3. Server cannot start.")
 
     print(f"💿 Loading data from {local_csv_path}.")
-    app.state.prog_df = pd.read_csv(local_csv_path)
+    app.state.prog_df = pd.read_csv(local_csv_path, dtype={'program_id':str})
     
     # 로컬에 저장된 임베딩 파일(.npy) 로드 (검색용)
     if not config.ITEMS_NPY_PATH.exists():
@@ -93,7 +103,7 @@ def startup_event():
     
     print(f"🧠 Loading embedding model: {config.EMBEDDING_MODEL}")
     app.state.embedding_model = SentenceTransformer(config.EMBEDDING_MODEL)
-    print("✅ All models and data are ready.")    
+    print("✅ All models and data are ready.")   
 
 @app.on_event("shutdown")
 def shutdown_event():
@@ -112,40 +122,35 @@ def search_programs(query: str, profession: str, history_turns: List[Dict]) -> L
     query_embedding = app.state.embedding_model.encode([full_query], normalize_embeddings=True)[0]
     sims = app.state.program_embeddings @ query_embedding
     
-    # ⭐️ 1. 최종 추천 개수를 config 파일에서 가져옵니다.
-    # 만약 config.py에 DEFAULT_TOP_K가 없다면 기본값으로 3을 사용합니다.
     top_k = getattr(config, 'DEFAULT_TOP_K', 3)
-
     matches = []
-    # ⭐️ 2. 중복된 제목을 추적하기 위한 집합(set)을 만듭니다.
     seen_titles = set()
-
-    # ⭐️ 3. 중복 가능성을 대비해 원하는 개수의 2배만큼 후보를 미리 조회합니다.
     num_candidates = top_k * 2 
     top_idx = np.argsort(-sims)[:num_candidates]
 
     for i in top_idx:
         row = app.state.prog_df.iloc[int(i)].to_dict()
-        title = row.get("title")
+        program_name = row.get("program_title")
 
-        # ⭐️ 4. 이미 추천 목록에 있는 제목이면, 이번 프로그램은 건너뜁니다.
-        if title in seen_titles:
+        if program_name in seen_titles:
             continue
         
-        # ⭐️ 5. 처음 보는 제목이면, 추천 목록(matches)과 중복 추적 집합(seen_titles)에 모두 추가합니다.
-        seen_titles.add(title)
+        seen_titles.add(program_name)
 
         output_data = {
-            "title": title,
+	    "program_id": row.get("program_id"),
+            "title": program_name,
+            "provider": row.get("provider"),
+            "date": row.get("체험일"),
             "program_type": row.get("program_type"),
             "target_audience": row.get("target_audience"),
-            "region": row.get("eligible_region"),
+	    "major": row.get("related_major"),
+            "region": row.get("venue_region"),
             "fee": row.get("price"),
             "score": float(sims[int(i)])
         }
         matches.append(output_data)
 
-        # ⭐️ 6. 추천 목록이 원하는 개수(top_k)만큼 채워지면, 더 이상 찾지 않고 반복을 중단합니다.
         if len(matches) >= top_k:
             break
             
@@ -175,7 +180,7 @@ def build_user_prompt(query: str, profile: Dict) -> str:
 
 def run_llm_chat(system_prompt: str, history_turns: List[Dict], user_prompt: str) -> str:
     """OpenAI LLM을 호출하여 답변 생성"""
-    if not app.state.oai_client: return ""
+    if app.state.oai_client is None: return ""
     messages = [{"role": "system", "content": system_prompt}]
     for turn in history_turns:
         messages.append({"role": "user", "content": turn["query"]})
@@ -190,12 +195,14 @@ def run_llm_chat(system_prompt: str, history_turns: List[Dict], user_prompt: str
         print(f"🔥 OpenAI API call failed: {e}")
         return ""
 
-def fetch_chat_history(user_id: str, profession: str) -> List[Dict[str, str]]:
+# ⭐️ 함수 인자 변경
+def fetch_chat_history(student_id: str, profession: str) -> List[Dict[str, str]]:
     """MongoDB에서 최근 대화 기록 조회"""
     if app.state.history is None:
         return []
     cursor = app.state.history.find(
-        {"type": "chat", "user_id": user_id, "profession": profession}
+        # ⭐️ DB 쿼리 필드 변경
+        {"type": "chat", "student_id": student_id, "profession": profession}
     ).sort("ts", -1).limit(config.HISTORY_LIMIT)
     history_docs = list(cursor)[::-1]
     return [{"query": h.get("query", ""), "answer": h.get("answer", "")} for h in history_docs]
@@ -213,22 +220,78 @@ def health_check():
         "program_count": len(app.state.prog_df) if hasattr(app.state, "prog_df") else 0,
     }
 
+
+
+# ⭐️ `/recommendations` 엔드포인트 로직 대폭 수정
+@app.post("/recommendations", response_model=schemas.RecommendResp)
+def get_recommendations(req: schemas.RecommendReq):
+    """DB의 채팅 기록 또는 profession을 바탕으로 프로그램을 추천하고 결과를 저장합니다."""
+    
+    history_turns = fetch_chat_history(req.student_id, req.profession)
+    
+    # ⭐️ 1. 채팅 기록 유무에 따라 검색 쿼리 결정
+    if not history_turns:
+        # 기록이 없으면 profession 자체를 검색어로 사용
+        search_query = req.profession
+        print(f"No chat history for {req.student_id}. Recommending based on profession: {req.profession}")
+    else:
+        # 기록이 있으면 최근 대화 내용을 검색어로 사용
+        search_query = " ".join(turn['query'] for turn in history_turns)
+        print(f"Recommending for {req.student_id} based on chat history.")
+
+    all_matches = search_programs(search_query, req.profession, history_turns)
+    
+    SCORE_THRESHOLD = 0.5
+    top_matches = [m for m in all_matches if float(m.get("score", 0)) >= SCORE_THRESHOLD]
+    if not top_matches and all_matches:
+        top_matches = all_matches[:1]
+
+    # ⭐️ 3. 추천 결과를 DB에 저장
+    if top_matches and app.state.recommendations is not None:
+        recommendation_id = str(uuid.uuid4()) # 추천 이벤트 고유 ID 생성
+        docs_to_save = []
+        for match in top_matches:
+            docs_to_save.append({
+                "program_recommendation_id": recommendation_id,
+                "student_id": req.student_id,
+		"profession": req.profession,
+                "program_id": match.get("program_id"),
+                "ts": datetime.now(timezone.utc)
+            })
+        
+        try:
+            app.state.recommendations.insert_many(docs_to_save)
+            print(f"✅ Saved {len(docs_to_save)} recommendations to DB for student {req.student_id}")
+        except Exception as e:
+            print(f"🔥 Failed to save recommendations to DB: {e}")
+
+    # ⭐️ 2. 응답 메시지와 함께 최종 결과 반환
+    return schemas.RecommendResp(
+        message=f"{req.profession} 관련 프로그램을 추천해드릴게요!",
+        top_matches=[schemas.ProgramMatch(**m) for m in top_matches]
+    )
+
+
+
+# ⭐️ 2. 기존 `/chat` 엔드포인트 단순화
 @app.post("/chat", response_model=schemas.ChatResp)
 def chat(req: schemas.ChatReq):
-    """메인 챗봇 엔드포인트"""
+    """LLM과 대화하고, 그 내용을 DB에 저장합니다. (추천 기능 없음)"""
+    
     query = (req.query or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty")
 
-    history_turns = fetch_chat_history(req.user_id, req.profession)
-    top_matches = search_programs(query, req.profession, history_turns)
-
+    history_turns = fetch_chat_history(req.student_id, req.profession)
+    
+    # --- 추천 관련 로직 모두 제거 ---
+    
     profile: Dict[str, Any] = {}
     used_profile = False
-    if app.state.users is not None and req.user_id:
-        doc = app.state.users.find_one({"_id": req.user_id})
+    if app.state.users is not None and req.student_id:
+        doc = app.state.users.find_one({"_id": req.student_id})
         if doc:
-            profile = {**doc, "user_id": req.user_id}; profile.pop("_id", None); used_profile = True
+            profile = {**doc, "student_id": req.student_id}; profile.pop("_id", None); used_profile = True
     
     system_prompt = build_system_prompt(req.profession)
     user_prompt = build_user_prompt(query, profile)
@@ -239,44 +302,38 @@ def chat(req: schemas.ChatReq):
 
     if app.state.history is not None:
         app.state.history.insert_one({
-            "type": "chat", "user_id": req.user_id, "profession": req.profession,
-            "query": query, "answer": answer, "matches": top_matches,
+            "type": "chat", "student_id": req.student_id, "profession": req.profession,
+            "query": query, "answer": answer, 
             "ts": datetime.now(timezone.utc),
         })
-    
-    # 🔑 score 필터: 0.5 미만 제거 (>= 0.5만 남김)
-    SCORE_THRESHOLD = 0.5
-    top_matches = [m for m in top_matches if float(m.get("score", 0)) >= SCORE_THRESHOLD]
 
-    if not top_matches:
-    # 필터로 다 날아가면 상위 몇 개는 살려둠(예: 3개)
-        top_matches = all_matches[:3]
+    # ⭐️ 순수하게 답변만 반환
+    return schemas.ChatResp(answer=answer)
 
-    return schemas.ChatResp(
-        answer=answer,
-        top_matches=[schemas.ProgramMatch(**m) for m in top_matches],
-        used_profile=used_profile,
-    )
 
 @app.post("/profile/upsert", status_code=200)
 def upsert_profile(p: schemas.Profile):
     """사용자 프로필 생성 또는 업데이트"""
     if app.state.users is None:
         raise HTTPException(503, "MongoDB is not configured")
-    update_data = p.model_dump(exclude={"user_id"})
-    app.state.users.update_one({"_id": p.user_id}, {"$set": update_data}, upsert=True)
+    # ⭐️ p.student_id 사용
+    update_data = p.model_dump(exclude={"student_id"})
+    app.state.users.update_one({"_id": p.student_id}, {"$set": update_data}, upsert=True)
     return {"ok": True}
 
-@app.get("/profile/{user_id}", response_model=schemas.Profile)
-def get_profile(user_id: str):
+# ⭐️ 경로 변수 및 함수 인자 변경
+@app.get("/profile/{student_id}", response_model=schemas.Profile)
+def get_profile(student_id: str):
     """특정 사용자 프로필 조회"""
     if app.state.users is None:
         raise HTTPException(503, "MongoDB is not configured")
-    doc = app.state.users.find_one({"_id": user_id})
+    # ⭐️ DB 쿼리 필드 변경
+    doc = app.state.users.find_one({"_id": student_id})
     if not doc:
         raise HTTPException(404, "Profile not found")
     
-    return schemas.Profile(user_id=doc.pop("_id"), **doc)
+    # ⭐️ 반환 필드명 변경
+    return schemas.Profile(student_id=doc.pop("_id"), **doc)
 
 @app.post("/log/event", status_code=200)
 def log_event(body: schemas.EventIn):
@@ -285,7 +342,8 @@ def log_event(body: schemas.EventIn):
         raise HTTPException(503, "MongoDB is not configured")
     app.state.history.insert_one({
         "type": body.type,
-        "user_id": body.user_id,
+        # ⭐️ body.student_id 사용
+        "student_id": body.student_id,
         "payload": body.payload,
         "ts": datetime.now(timezone.utc),
     })
