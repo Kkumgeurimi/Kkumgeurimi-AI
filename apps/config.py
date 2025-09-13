@@ -11,7 +11,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 # --- S3 설정 (⭐️ 하나로 통일) ---
 S3_BUCKET_NAME = "ggoomgil-raw" # 👈 본인의 S3 버킷 이름
-S3_PROGRAM_CSV_KEY = "ggoomgil_test_20250911_014415.csv" # 👈 사용할 단 하나의 CSV 경로
+S3_PROGRAM_CSV_KEY = "ggoomgil_test_통합.csv" # 👈 사용할 단 하나의 CSV 경로
 
 
 # --- 데이터 및 임베딩 경로 ---
@@ -30,6 +30,7 @@ MONGO_URI = os.getenv("MONGO_URI", "")
 DB_NAME = "ggoomgil"
 USERS_COLLECTION = "users"
 HISTORY_COLLECTION = "history"
+RECOMMENDATIONS_COLLECTION = "recommendations"
 
 # --- RAG/Chat 설정 ---
 DEFAULT_TOP_K = 3

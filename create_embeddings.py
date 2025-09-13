@@ -9,7 +9,7 @@ from sentence_transformers import SentenceTransformer
 
 # --- 설정 (Configuration) ---
 S3_BUCKET_NAME = "ggoomgil-raw"  # 👈 config.py와 동일한 S3 버킷 이름
-S3_PROGRAM_CSV_KEY = "ggoomgil_surface_seongnam_with_category.csv" # 👈 config.py와 동일한 CSV 경로
+S3_PROGRAM_CSV_KEY = "ggoomgil_test_통합.csv" # 👈 config.py와 동일한 CSV 경로
 
 OUTPUT_DIR = Path("./artifacts/emb")
 OUTPUT_FILENAME = OUTPUT_DIR / "items.npy"
@@ -32,22 +32,19 @@ def process_and_combine_text(csv_path: str) -> list[str]:
     df = pd.read_csv(csv_path)
     texts = []
     for _, row in df.iterrows():
-        title = str(row.get("title", ""))
-        major = str(row.get("체험직무학과", ""))
+        # ⭐️ 1. 'title'을 'program_type'으로 변경
+        program_name = str(row.get("program_title", "")) 
+        major = str(row.get("related_major", ""))
+        # ⭐️ 2. 'description'을 'level_info'로 변경
+        level_info = str(row.get("level_info", ""))
 
-        # ⭐️ 1. 상세 설명을 description 변수로 가져옵니다.
-        description = str(row.get("수준별 정보", ""))
-
-        # 2. 기존처럼 제목과 전공을 3번 반복해서 핵심 정보(core_info)를 만듭니다.
-        core_info = " ".join([title,major] * 3)
-        
-        # ⭐️ 3. 핵심 정보 뒤에 상세 설명을 합쳐서 최종 텍스트를 만듭니다.
-        full_text = core_info + " " + description
+        # ⭐️ 3. 새로운 변수명을 사용해 텍스트 조합
+        core_info = " ".join([program_name, major] * 3)
+        full_text = core_info + " " + level_info
         texts.append(full_text.strip())
         
     print(f"✅ Combined text for {len(texts)} programs.")
     return texts
-
 
 def embed_texts(texts: list[str]) -> np.ndarray:
     print(f"Loading embedding model '{MODEL_NAME}'...")
