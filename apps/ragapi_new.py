@@ -5,12 +5,17 @@ from openai import OpenAI
 from pymongo import MongoClient
 from sentence_transformers import SentenceTransformer
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import numpy as np
 import pandas as pd
 
 import uuid
+import tempfile
+import os
+
+import json
+import re
 
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
@@ -19,16 +24,25 @@ from . import config
 from . import schemas
 
 # ======= S3 다운로드 함수 ===========
-def download_from_s3(bucket: str, key: str, local_path: str) -> bool:
-    print(f"Downloading s3://{bucket}/{key} to {local_path}...")
+def download_from_s3(bucket: str, key: str) -> Optional[str]:
+    """S3에서 파일을 고유한 임시 파일로 다운로드하고, 그 경로를 반환합니다."""
+    
+    # ⭐️ 겹치지 않는 고유한 이름의 임시 파일 생성
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_f:
+        temp_file_path = temp_f.name
+    
+    print(f"Attempting to download s3://{bucket}/{key} to temporary file {temp_file_path}...")
     s3 = boto3.client('s3')
     try:
-        s3.download_file(bucket, key, local_path)
+        s3.download_file(bucket, key, temp_file_path)
         print("✅ Download successful.")
-        return True
+        # ⭐️ 성공 시, 생성된 임시 파일의 경로를 반환
+        return temp_file_path
     except (NoCredentialsError, ClientError) as e:
         print(f"🔥 Failed to download from S3: {e}")
-        return False
+        # 실패 시, 생성했던 임시 파일 삭제 후 None 반환
+        os.remove(temp_file_path)
+        return None
 
 # ======================================================================================
 # 1. 앱 초기화 및 미들웨어 설정
@@ -86,13 +100,22 @@ def startup_event():
     if app.state.oai_client: print("✅ OpenAI client initialized.")
     else: print("⚠️ OpenAI client not available (API key missing).")
 
-    # S3에서 최신 원본 CSV 다운로드 (화면 표시용)
-    local_csv_path = "downloaded_program_data.csv"
-    if not download_from_s3(config.S3_BUCKET_NAME, config.S3_PROGRAM_CSV_KEY, local_csv_path):
-        raise RuntimeError("🔥 Failed to download program CSV from S3. Server cannot start.")
+    # S3에서 최신 원본 CSV 다운로드
+    local_csv_path = None # ⭐️ 변수 초기화
+    try:
+        # ⭐️ 고유한 임시 파일 경로를 받음
+        local_csv_path = download_from_s3(config.S3_BUCKET_NAME, config.S3_PROGRAM_CSV_KEY)
+        if not local_csv_path:
+            raise RuntimeError("🔥 Failed to download program CSV from S3.")
 
-    print(f"💿 Loading data from {local_csv_path}.")
-    app.state.prog_df = pd.read_csv(local_csv_path, dtype={'program_id':str})
+        print(f"💿 Loading data from {local_csv_path}.")
+        app.state.prog_df = pd.read_csv(local_csv_path, dtype={'program_id': str})
+    finally:
+        # ⭐️ 작업이 성공하든 실패하든, 사용이 끝난 임시 파일은 반드시 삭제
+        if local_csv_path and os.path.exists(local_csv_path):
+            os.remove(local_csv_path)
+            print(f"✅ Cleaned up temporary file: {local_csv_path}")
+
     
     # 로컬에 저장된 임베딩 파일(.npy) 로드 (검색용)
     if not config.ITEMS_NPY_PATH.exists():
@@ -139,14 +162,14 @@ def search_programs(query: str, profession: str, history_turns: List[Dict]) -> L
 
         output_data = {
 	    "program_id": row.get("program_id"),
-            "title": program_name,
+            "program_title": program_name,
             "provider": row.get("provider"),
             "date": row.get("체험일"),
             "program_type": row.get("program_type"),
             "target_audience": row.get("target_audience"),
-	    "major": row.get("related_major"),
-            "region": row.get("venue_region"),
-            "fee": row.get("price"),
+	    "related_major": row.get("related_major"),
+            "venue_region": row.get("venue_region"),
+            "price": row.get("price"),
             "score": float(sims[int(i)])
         }
         matches.append(output_data)
@@ -348,3 +371,139 @@ def log_event(body: schemas.EventIn):
         "ts": datetime.now(timezone.utc),
     })
     return {"ok": True}
+
+# ======================================================================================
+# 6. 커리어맵 API 엔드포인트
+# ======================================================================================
+@app.get("/careermap/{student_id}", response_model=schemas.CareerMapResponse)
+def get_careermap(student_id: str):
+    """학생의 프로그램 참여 기록을 바탕으로 커리어맵 키워드를 생성합니다."""
+    
+    # --- 1. S3에서 학생 참여 정보 CSV 다운로드 및 처리 ---
+    local_participation_csv = None
+    
+    try:
+        # 고유한 임시 파일 경로를 받음
+        local_participation_csv = download_from_s3(config.S3_BUCKET_NAME, config.S3_PARTICIPATION_CSV_KEY)
+        if not local_participation_csv:
+            raise HTTPException(status_code=503, detail="Could not load participation data.")
+
+        participation_df = pd.read_csv(local_participation_csv, dtype={'program_id': str, 'student_id': str})
+        
+        # 1-1. 해당 학생의 데이터만 필터링
+        student_programs_df = participation_df[participation_df['student_id'] == student_id]
+        
+        if student_programs_df.empty:
+            # 참여 기록이 없으면 빈 결과 반환
+            return schemas.CareerMapResponse(student_id=student_id, results=[])
+
+        # 1-2. 최신순(program_registration_id가 높은 순)으로 정렬 후 최대 7개 선택
+        recent_programs_df = student_programs_df.sort_values(
+            by='program_registration_id', ascending=False
+        ).head(7)
+        
+        # 1-3. GPT에 보낼 프로그램 제목 목록과, 나중에 사용할 ID-제목 매핑 생성
+        program_info_list = []
+        for index, row in recent_programs_df.iterrows():
+            title = row.get("program_title", "")
+            major = row.get("related_major", "정보 없음")
+            program_info_list.append(f"{title} (관련 전공: {major})")
+
+        # 나중에 사용할 ID-제목 매핑은 그대로 유지
+        program_id_title_map = pd.Series(
+            recent_programs_df.program_id.values, index=recent_programs_df.program_title
+        ).to_dict()
+
+    except Exception as e:
+        print(f"🔥 Failed to process participation CSV: {e}")
+        raise HTTPException(status_code=500, detail="Error processing participation data.")
+
+    finally:
+        if local_participation_csv and os.path.exists(local_participation_csv):
+            os.remove(local_participation_csv)
+            print(f"✅ Cleaned up temporary file: {local_participation_csv}")
+
+    # --- 2. GPT에 전달할 프롬프트 생성 ---
+    program_list_str = "\n- ".join(program_info_list)
+    prompt_for_gpt = (
+        f"당신은 학생들의 활동 기록을 바탕으로 '나의 진로맵'을 생성하는 전문 커리어 컨설턴트입니다.\n"
+        f"학생이 최근 참여한 프로그램 목록은 다음과 같습니다:\n- {program_list_str}\n\n"
+        f"당신의 목표는 이 활동들을 종합적으로 분석하여, 학생의 핵심 관심사를 나타내는 키워드와 관련 직무를 찾아내는 것입니다.\n\n"
+        f"## 작업 지침:\n"
+        f"1. **키워드 생성**: 아래 규칙에 따라 1~4개의 '핵심 키워드'를 추출합니다.\n"
+        f"    - **규칙 1**: 키워드는 반드시 단어 한 개로 구성해야 합니다.\n"
+        f"    - **규칙 2**: 키워드는 진로/직업과 관련된 개념이어야 하지만, '서비스 기획자'와 같은 구체적인 직업명은 절대 키워드로 사용할 수 없습니다. (좋은 예: '서비스 기획', '사용자 경험' / 나쁜 예: '서비스 기획자')\n"
+        f"2. **정보 생성**: 각 키워드에 대해 아래 정보를 정리합니다.\n"
+        f"   - `keyword_description`: 키워드에 대한 간결한 설명, 3문장 이내.\n"
+        f"   - `related_participated_programs`: 제시된 학생 참여 프로그램 목록 중, 해당 키워드와 직접 관련된 프로그램의 '제목'만 정확히 골라 리스트에 담아주세요.\n"
+        f"   - `related_jobs`: 키워드와 관련된 직무를 **단 하나만** 제안하고, 소개를 포함해주세요. 소개는 3문장 이내여야 합니다.\n\n"
+        f"## 출력 형식 (매우 중요):\n"
+        f"반드시 아래의 예시와 동일한 JSON 구조로만 응답해주세요. 절대로 JSON 객체 이외의 다른 설명이나 부가적인 텍스트를 포함하지 마세요.\n\n"
+        f"### 예시:\n"
+        f"{{\n"
+        f'  "keywords": [\n'
+        f'    {{\n'
+        f'      "keyword": "기획",\n'
+        f'      "keyword_description": "사용자에게 필요한 서비스를 구상하고 구체화하여 비즈니스 가치를 만들어내는 과정입니다.",\n'
+        f'      "related_participated_programs": ["PM 직무 멘토링", "사용자 리서치 워크샵"],\n'
+        f'      "related_jobs": [\n'
+        f'       {{ "job_title": "서비스 기획자", "job_description": "사용자 문제를 해결하고 비즈니스 목표를 달성하는 서비스를 설계하는 전문가입니다." }}\n'
+        f'      ]\n'
+        f'    }},\n'
+        f'    {{\n'
+        f'      "keyword": "콘텐츠",\n'
+        f'      "keyword_description": "글, 이미지, 영상 등 다양한 형태의 콘텐츠를 통해 메시지를 전달하는 활동입니다.",\n'
+        f'      "related_participated_programs": ["콘텐츠 마케팅 스쿨"],\n'
+        f'      "related_jobs": [\n'
+        f'        {{ "job_title": "콘텐츠 마케터", "job_description": "고객에게 유용한 콘텐츠를 통해 브랜드의 가치를 효과적으로 전달하는 전문가입니다." }}\n'
+        f'      ]\n'
+        f'    }}\n'
+        f'  ]\n'
+        f'}}\n'
+   )
+
+    # --- 3. GPT 호출 및 결과 파싱 ---
+    try:
+        gpt_response_str = run_llm_chat("", [], prompt_for_gpt)
+        
+        # ⭐️ 1. GPT의 원본 응답을 그대로 출력해서 확인 (디버깅용)
+        print("--- GPT Raw Response ---")
+        print(gpt_response_str)
+        print("------------------------")
+        
+        # ⭐️ 2. JSON 부분만 더 똑똑하게 추출 (정규 표현식 사용)
+        match = re.search(r"\{.*\}", gpt_response_str, re.DOTALL)
+        if not match:
+            raise json.JSONDecodeError("No JSON object found in GPT response", gpt_response_str, 0)
+        
+        json_part = match.group(0)
+        gpt_response_json = json.loads(json_part)
+
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"🔥 Failed to call or parse GPT response: {e}")
+        return schemas.CareerMapResponse(student_id=student_id, results=[])
+
+    # --- 4. GPT 결과를 최종 응답 형식으로 조립 ---
+    final_results = []
+    for item in gpt_response_json.get("keywords", []):
+        # GPT가 반환한 프로그램 제목을 실제 program_id와 매핑
+        related_programs_with_id = [
+            schemas.ParticipatedProgram(
+                program_id=program_id_title_map.get(title),
+                program_title=title
+            )
+            for title in item.get("related_participated_programs", [])
+            if title in program_id_title_map # GPT가 없는 프로그램을 지어내지 않도록 방지
+        ]
+        
+        final_results.append(
+            schemas.KeywordResult(
+                keyword=item.get("keyword"),
+                keyword_description=item.get("keyword_description"),
+                related_participated_programs=related_programs_with_id,
+                related_jobs=[schemas.RelatedJob(**job) for job in item.get("related_jobs", [])]
+            )
+        )
+    
+    return schemas.CareerMapResponse(student_id=student_id, results=final_results)
+

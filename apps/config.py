@@ -12,7 +12,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 # --- S3 설정 (⭐️ 하나로 통일) ---
 S3_BUCKET_NAME = "ggoomgil-raw" # 👈 본인의 S3 버킷 이름
 S3_PROGRAM_CSV_KEY = "ggoomgil_test_통합.csv" # 👈 사용할 단 하나의 CSV 경로
-
+S3_PARTICIPATION_CSV_KEY = "map_test.csv" # 학생 참여 정보 파일 경로 추가
 
 # --- 데이터 및 임베딩 경로 ---
 CSV_PROGRAM_PATH = PROJECT_ROOT / "artifacts" / "data" / "program.csv"

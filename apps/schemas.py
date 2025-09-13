@@ -31,14 +31,14 @@ class RecommendResp(BaseModel):
 
 class ProgramMatch(BaseModel):
     program_id: Optional[str] = None
-    title: Optional[str] = None
+    program_title: Optional[str] = None
     provider: Optional[str] = None
     date: Optional[str] = None
     program_type: Optional[str] = None
     target_audience: Optional[str] = None
-    major: Optional[str] = None
-    region: Optional[str] = None
-    fee: Any = None
+    related_major: Optional[str] = None
+    venue_region: Optional[str] = None
+    price: Any = None
     score: float
 
 class Profile(BaseModel):
@@ -56,3 +56,28 @@ class EventIn(BaseModel):
 
 
 RecommendResp.update_forward_refs()
+
+
+# --- ⭐️ 커리어맵 API를 위한 스키마 신규 추가 ---
+
+# API 응답에 포함될 '참여 프로그램'의 간단한 정보
+class ParticipatedProgram(BaseModel):
+    program_id: Optional[str] = None
+    program_title: Optional[str] = None
+
+# API 응답에 포함될 '관련 직무' 정보
+class RelatedJob(BaseModel):
+    job_title: str
+    job_description: str
+
+# 키워드 하나에 대한 전체 분석 결과
+class KeywordResult(BaseModel):
+    keyword: str
+    keyword_description: str
+    related_participated_programs: List[ParticipatedProgram] # 유저가 참여했던 프로그램 중 연관된 것
+    related_jobs: List[RelatedJob]
+
+# 커리어맵 API의 최종 응답 형태
+class CareerMapResponse(BaseModel):
+    student_id: str
+    results: List[KeywordResult]
