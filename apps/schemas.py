@@ -33,13 +33,15 @@ class ProgramMatch(BaseModel):
     program_id: Optional[str] = None
     program_title: Optional[str] = None
     provider: Optional[str] = None
-    date: Optional[str] = None
+    cost_type: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
     program_type: Optional[str] = None
     target_audience: Optional[str] = None
     related_major: Optional[str] = None
     venue_region: Optional[str] = None
-    price: Any = None
-    score: float
+#    price: Any = None
+    score: Optional[float] = None
 
 class Profile(BaseModel):
     student_id: str
@@ -81,3 +83,7 @@ class KeywordResult(BaseModel):
 class CareerMapResponse(BaseModel):
     student_id: str
     results: List[KeywordResult]
+
+# --- ⭐️ 추천 내역 조회 API를 위한 스키마 신규 추가 ---
+class RecommendationHistoryResponse(BaseModel):
+    recommended_programs: List[ProgramMatch]

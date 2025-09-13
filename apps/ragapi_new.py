@@ -110,6 +110,7 @@ def startup_event():
 
         print(f"💿 Loading data from {local_csv_path}.")
         app.state.prog_df = pd.read_csv(local_csv_path, dtype={'program_id': str})
+        app.state.prog_df = app.state.prog_df.replace({np.nan})
     finally:
         # ⭐️ 작업이 성공하든 실패하든, 사용이 끝난 임시 파일은 반드시 삭제
         if local_csv_path and os.path.exists(local_csv_path):
@@ -164,12 +165,14 @@ def search_programs(query: str, profession: str, history_turns: List[Dict]) -> L
 	    "program_id": row.get("program_id"),
             "program_title": program_name,
             "provider": row.get("provider"),
-            "date": row.get("체험일"),
+            "start_date": row.get("start_date"),
+            "end_date": row.get("end_date"),
             "program_type": row.get("program_type"),
             "target_audience": row.get("target_audience"),
 	    "related_major": row.get("related_major"),
             "venue_region": row.get("venue_region"),
-            "price": row.get("price"),
+            "cost_type": row.get("cost_type"),
+        #    "price": row.get("price"),
             "score": float(sims[int(i)])
         }
         matches.append(output_data)
@@ -184,7 +187,7 @@ def build_system_prompt(profession: str) -> str:
     profession = (profession or "진로 상담 전문가").strip()[:60]
     return (
         f"너는 '{profession}'라는 직업을 가진 전문가야. 중고등학생들에게 진로 상담을 해줘. "
-        "어려운 용어 대신 친절하고 따뜻한 말투를 사용해. 학생의 상황에 맞는 실용적인 조언을 해주고, "
+        "어려운 용어 대신 친절하고 따뜻한 말투를 사용해. 반말과 존댓말을 혼용하지 말고, 존댓말을 사용해줘. 학생의 상황에 맞는 실용적인 조언을 해주고,"
         "이전 대화의 흐름을 자연스럽게 이어가줘. 절대로 마크다운 문법은 쓰지 마."
     )
 
@@ -507,3 +510,45 @@ def get_careermap(student_id: str):
     
     return schemas.CareerMapResponse(student_id=student_id, results=final_results)
 
+
+# ======================================================================================	
+# 7. 추천 내역 조회 API 엔드포인트
+# ======================================================================================
+@app.get("/recommendations/history/{student_id}", response_model=schemas.RecommendationHistoryResponse)
+def get_recommendation_history(student_id: str):
+    """학생 ID로 과거에 추천받았던 프로그램 목록 전체를 '최신순'으로 조회합니다."""
+    
+    if app.state.recommendations is None:
+        raise HTTPException(status_code=503, detail="MongoDB is not configured")
+        
+    # ⭐️ 1. MongoDB에서 'ts'(timestamp)를 기준으로 최신순(-1)으로 정렬하여 조회
+    recommended_docs = app.state.recommendations.find(
+        {"student_id": student_id}
+    ).sort("ts", -1)
+    
+    # ⭐️ 2. 중복을 제거하면서도 순서를 유지하는 로직
+    unique_ordered_ids = []
+    seen_ids = set()
+    for doc in recommended_docs:
+        prog_id = doc.get('program_id')
+        if prog_id and prog_id not in seen_ids:
+            unique_ordered_ids.append(prog_id)
+            seen_ids.add(prog_id)
+    
+    if not unique_ordered_ids:
+        return schemas.RecommendationHistoryResponse(recommended_programs=[])
+
+    # 3. pandas DataFrame에서 정보 가져오기
+    recommended_programs_df = app.state.prog_df[app.state.prog_df['program_id'].isin(unique_ordered_ids)]
+    
+    # ⭐️ 4. 결과를 MongoDB에서 조회한 최신순으로 다시 정렬
+    # program_id를 카테고리 타입으로 변환하여 순서를 지정
+    recommended_programs_df['program_id'] = pd.Categorical(recommended_programs_df['program_id'], categories=unique_ordered_ids, ordered=True)
+    sorted_df = recommended_programs_df.sort_values('program_id')
+    sorted_df = sorted_df.replace({np.nan: None})
+    
+    recommended_programs_list = sorted_df.to_dict('records')
+
+    return schemas.RecommendationHistoryResponse(
+        recommended_programs=[schemas.ProgramMatch(**prog) for prog in recommended_programs_list]
+    )
