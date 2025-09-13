@@ -38,9 +38,10 @@ def process_and_combine_text(csv_path: str) -> list[str]:
         # ⭐️ 2. 'description'을 'level_info'로 변경
         level_info = str(row.get("level_info", ""))
 
+        weighted_text = (program_name + " ") * 10 + (major + " ") * 4
+
         # ⭐️ 3. 새로운 변수명을 사용해 텍스트 조합
-        core_info = " ".join([program_name, major] * 3)
-        full_text = core_info + " " + level_info
+        full_text = weighted_text + level_info
         texts.append(full_text.strip())
         
     print(f"✅ Combined text for {len(texts)} programs.")
