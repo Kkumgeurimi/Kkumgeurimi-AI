@@ -4,4 +4,5 @@ __pycache__/
 *.pyc
 
 # 모든 .save 파일 무시
+apps/
 *.save
