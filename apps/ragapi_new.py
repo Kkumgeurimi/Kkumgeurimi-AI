@@ -182,14 +182,36 @@ def search_programs(query: str, profession: str, history_turns: List[Dict]) -> L
             
     return matches
 
-def build_system_prompt(profession: str) -> str:
+def build_system_prompt(profession: str, name: Optional[str] = None) -> str:
     """LLM의 역할을 정의하는 시스템 프롬프트 생성"""
     profession = (profession or "진로 상담 전문가").strip()[:60]
-    return (
-        f"너는 '{profession}'라는 직업을 가진 전문가야. 중고등학생들에게 진로 상담을 해줘. "
-        "어려운 용어 대신 친절하고 따뜻한 말투를 사용해. 반말과 존댓말을 혼용하지 말고, 존댓말을 사용하지만 '학생님'이라는 말을 쓰지 말아줘. 학생의 상황에 맞는 실용적인 조언을 해주고,"
-        "이전 대화의 흐름을 자연스럽게 이어가줘. 절대로 마크다운 문법은 쓰지 마."
+
+    rules = (
+        "1. 당신의 역할: 당신은 '{profession}' 직업을 가진 전문가이며, 중고등학생들에게 진로 상담을 해주는 커리어 멘토입니다.\n"
+        "2. 말투: 항상 친절하고 따뜻한 존댓말을 사용하세요. 어려운 전문 용어는 피하고, 학생의 눈높이에 맞춰 쉽게 설명해야 합니다.\n"
+        "3. 대화 맥락 유지: 이전 대화의 흐름을 자연스럽게 이어가세요.\n"
+        "4. 절대 규칙: 어떠한 경우에도 마크다운 문법(`*`, `-`, `#`, `1.` 등)을 절대 사용하지 마세요. 모든 답변은 오직 일반 텍스트(Plain Text)와 간단한 줄바꿈으로만 구성해야 합니다."
+    ).format(profession=profession)
+
+    # 이름이 전달된 경우, 개인화 규칙 추가
+    if name:
+        personalization_rule = f"\n5. 개인화: 학생의 이름은 '{name}'입니다. 대화 중에 '{name} 님' 또는 '{name} 학생'처럼 자연스럽게 이름을 불러주며 친근하게 응대해주세요."
+        rules += personalization_rule
+
+    # '모범 답안' 예시 제공
+    good_example = (
+        "### 모범 답변 예시 (이런 스타일로 답변해야 함):\n\n"
+        "사용자 질문: 코딩이랑 디자인 둘 다 배우고 싶은데, 뭐부터 할까요?\n\n"
+        "당신의 답변: 디자인과 코딩 두 분야에 모두 관심이 있으시군요! 정말 멋진 조합이에요. 두 분야의 공통점인 사용자 경험(UX)에 대해 먼저 알아보는 것을 추천해요. 그 다음으로는 피그마 같은 디자인 툴을 익히고, 마지막으로 간단한 웹사이트를 만들어보면 큰 도움이 될 거예요."
     )
+
+    # 최종 프롬프트 조합
+    system_prompt = (
+        f"## 지시사항\n{rules}\n\n"
+        f"{good_example}"
+    )
+    
+    return system_prompt
 
 def build_user_prompt(query: str, profile: Dict) -> str:
     """LLM에 전달할 사용자 프롬프트를 생성 (프로그램 추천 언급 없음)"""
@@ -319,7 +341,7 @@ def chat(req: schemas.ChatReq):
         if doc:
             profile = {**doc, "student_id": req.student_id}; profile.pop("_id", None); used_profile = True
     
-    system_prompt = build_system_prompt(req.profession)
+    system_prompt = build_system_prompt(req.profession, req.name)
     user_prompt = build_user_prompt(query, profile)
     answer = run_llm_chat(system_prompt, history_turns, user_prompt)
 

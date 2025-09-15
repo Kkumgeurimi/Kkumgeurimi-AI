@@ -5,6 +5,7 @@ from typing import Optional, List, Dict, Any
 # --- ⭐️ 1. 채팅 요청/응답 스키마 단순화 ---
 class ChatReq(BaseModel):
     student_id: str
+    name: Optional[str] = None
     profession: str = Field(
         default="진로 상담 지식을 갖춘 직장인",
         description="예: 소프트웨어 엔지니어, 데이터 사이언티스트, 산업디자이너 등"
