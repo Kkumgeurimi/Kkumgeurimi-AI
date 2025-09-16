@@ -141,8 +141,17 @@ def shutdown_event():
 # ======================================================================================
 def search_programs(query: str, profession: str, history_turns: List[Dict]) -> List[Dict]:
     """대화 내용 기반으로 관련 진로 체험 프로그램을 검색"""
-    context_text = " ".join(turn["query"] for turn in history_turns)
+
+   # ⭐️ 사용자와 AI의 대화를 모두 합쳐서 전체 맥락(context) 생성
+    context_parts = []
+    for turn in history_turns:
+        context_parts.append(turn.get('query', ''))
+        context_parts.append(turn.get('answer', ''))
+    context_text = " ".join(context_parts)
+    
+    # 최종 검색어 = 전체 대화 맥락 + 현재 핵심 질문 + 직업
     full_query = f"{context_text} {query} {profession}"
+   
     query_embedding = app.state.embedding_model.encode([full_query], normalize_embeddings=True)[0]
     sims = app.state.program_embeddings @ query_embedding
     
@@ -276,17 +285,21 @@ def get_recommendations(req: schemas.RecommendReq):
     """DB의 채팅 기록 또는 profession을 바탕으로 프로그램을 추천하고 결과를 저장합니다."""
     
     history_turns = fetch_chat_history(req.student_id, req.profession)
-    
-    # ⭐️ 1. 채팅 기록 유무에 따라 검색 쿼리 결정
+
+
+    # ⭐️ 1. 채팅 기록 유무에 따라 검색 쿼리 결정 (수정된 로직)
     if not history_turns:
         # 기록이 없으면 profession 자체를 검색어로 사용
         search_query = req.profession
         print(f"No chat history for {req.student_id}. Recommending based on profession: {req.profession}")
     else:
-        # 기록이 있으면 최근 대화 내용을 검색어로 사용
-        search_query = " ".join(turn['query'] for turn in history_turns)
-        print(f"Recommending for {req.student_id} based on chat history.")
+        # 기록이 있으면 '가장 마지막 사용자 질문'을 핵심 검색어로 사용
+        search_query = history_turns[-1]['query']
+        print(f"Recommending for {req.student_id} based on last query: '{search_query}'")
 
+    # ⭐️ 2. search_programs 호출
+    # search_query: 현재 핵심 검색어 (목적지)
+    # history_turns: 전체 대화 맥락 (이동 경로)
     all_matches = search_programs(search_query, req.profession, history_turns)
     
     SCORE_THRESHOLD = 0.5
