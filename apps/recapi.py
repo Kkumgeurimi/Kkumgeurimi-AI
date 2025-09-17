@@ -1,5 +1,10 @@
 from dotenv import load_dotenv
-load_dotenv()
+import pathlib
+
+# 항상 프로젝트 루트의 .env 읽기
+env_path = pathlib.Path(__file__).parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List, Dict, Any
