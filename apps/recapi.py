@@ -10,8 +10,8 @@ from pydantic import BaseModel
 
 # ---------- 설정 ----------
 HOME = pathlib.Path.home()
-CSV_PROGRAM = os.getenv("CSV_PROGRAM", str(HOME / "hackathon/artifacts/data/program.csv"))
-EMB_PATH    = os.getenv("EMB_PATH",    str(HOME / "hackathon/artifacts/emb/items.npy"))
+CSV_PROGRAM = os.getenv("CSV_PROGRAM", str(HOME / "Kkumgeurimi-AI/artifacts/data/program.csv"))
+EMB_PATH    = os.getenv("EMB_PATH",    str(HOME / "Kkumgeurimi-AI/artifacts/emb/items.npy"))
 MODEL_NAME  = os.getenv("MODEL_NAME",  "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 MONGO_URI   = os.getenv("MONGO_URI",   "")
 MONGO_DB    = os.getenv("MONGO_DB",    "ggoomgil")  # DB 이름 고정
