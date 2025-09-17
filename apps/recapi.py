@@ -1,9 +1,9 @@
 from dotenv import load_dotenv
-import pathlib
+import pathlib, os
 
-# 항상 프로젝트 루트의 .env 읽기
-env_path = pathlib.Path(__file__).parent.parent / ".env"
-load_dotenv(dotenv_path=env_path)
+# 항상 프로젝트 루트의 .env를 읽도록 강제
+env_path = pathlib.Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=env_path, override=True)
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
